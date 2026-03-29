@@ -1,0 +1,178 @@
+name: ml-code-review-env
+version: "1.0.0"
+description: >
+  An OpenEnv environment where an AI agent reviews and fixes
+  senior-level ML training code bugs. Tasks range from broken
+  training loops to deep transformer architecture flaws.
+
+author: ml-review-team
+license: MIT
+tags:
+  - openenv
+  - code-review
+  - machine-learning
+  - reinforcement-learning
+
+# ── Tasks ──────────────────────────────────────────────────
+tasks:
+  - id: 0
+    name: broken_training_loop
+    difficulty: easy
+    description: Fix wrong loss reduction and missing zero_grad
+    n_bugs: 2
+
+  - id: 1
+    name: broken_validation_loop
+    difficulty: medium
+    description: Fix missing eval mode, no_grad, and train restore
+    n_bugs: 3
+
+  - id: 2
+    name: broken_transformer
+    difficulty: hard
+    description: Fix attention mask, positional encoding, weight tying, and LayerNorm
+    n_bugs: 4
+
+# ── Action space ───────────────────────────────────────────
+action_space:
+  - name: submit_fix
+    description: Submit fixed Python code
+    fields:
+      - name: type
+        type: string
+        required: true
+        value: "submit_fix"
+      - name: code
+        type: string
+        required: true
+
+  - name: explain_issue
+    description: Explain what the bugs are and why they cause silent failures
+    fields:
+      - name: type
+        type: string
+        required: true
+        value: "explain_issue"
+      - name: explanation
+        type: string
+        required: true
+
+  - name: optimize
+    description: Submit code with performance improvements
+    fields:
+      - name: type
+        type: string
+        required: true
+        value: "optimize"
+      - name: code
+        type: string
+        required: true
+
+  - name: request_hint
+    description: Request a hint (costs -0.04 reward)
+    fields:
+      - name: type
+        type: string
+        required: true
+        value: "request_hint"
+
+  - name: no_op
+    description: Do nothing (costs -0.02 reward)
+    fields:
+      - name: type
+        type: string
+        required: true
+        value: "no_op"
+
+# ── Observation space ──────────────────────────────────────
+observation_space:
+  - name: task_id
+    type: integer
+    description: Task index (0, 1, or 2)
+
+  - name: difficulty
+    type: string
+    description: easy | medium | hard
+
+  - name: title
+    type: string
+    description: Short task title
+
+  - name: description
+    type: string
+    description: Full task description including bug hints
+
+  - name: buggy_code
+    type: string
+    description: The broken ML training code to fix
+
+  - name: n_bugs
+    type: integer
+    description: Number of bugs in this task
+
+  - name: steps_taken
+    type: integer
+    description: Steps used so far in this episode
+
+  - name: steps_remaining
+    type: integer
+    description: Steps left before episode ends
+
+  - name: hints_used
+    type: integer
+    description: Number of hints requested so far
+
+  - name: best_score
+    type: float
+    description: Best total reward achieved this episode (0.0 to 1.0)
+
+  - name: best_sub_scores
+    type: object
+    description: Best score per dimension (correctness, architecture, explanation, efficiency)
+
+  - name: done
+    type: boolean
+    description: Whether the episode has ended
+
+# ── Reward ─────────────────────────────────────────────────
+reward:
+  range: [-0.2, 1.0]
+  description: >
+    Weighted sum of sub-scores with partial progress signals.
+  components:
+    - name: correctness
+      weight: 0.45
+      description: Are the bugs actually fixed?
+    - name: architecture
+      weight: 0.20
+      description: Is the design pattern correct?
+    - name: explanation
+      weight: 0.20
+      description: Does the agent explain WHY bugs exist?
+    - name: efficiency
+      weight: 0.10
+      description: No memory waste, ML best practices?
+    - name: speed_bonus
+      weight: 0.05
+      description: Bonus for solving with steps remaining
+  penalties:
+    - name: hint_penalty
+      amount: -0.04
+      description: Per hint requested
+    - name: noop_penalty
+      amount: -0.02
+      description: Per no_op action taken
+
+# ── Endpoints ──────────────────────────────────────────────
+endpoints:
+  reset:   POST /reset
+  step:    POST /step
+  state:   GET  /state
+  tasks:   GET  /tasks
+  grader:  POST /grader
+  baseline: GET /baseline
+
+# ── Environment settings ───────────────────────────────────
+settings:
+  max_steps: 15
+  n_tasks: 3
