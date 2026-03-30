@@ -1,5 +1,5 @@
 [project]
-name = "ml-review-env"
+name = "open-env"
 version = "1.0.0"
 description = "OpenEnv environment for ML training code review"
 readme = "README.md"
@@ -20,7 +20,7 @@ dependencies = [
 server = "server:main"
 
 [project.urls]
-Homepage = "https://huggingface.co/spaces/raghava2/ml-review-env"
+Homepage = "https://huggingface.co/spaces/raghava2/open-env"
 
 [build-system]
 requires = ["setuptools>=61.0"]
