@@ -130,7 +130,7 @@ correctness score — the agent gets reward signal even for fixing
 
 ```bash
 # Clone the repo
-git clone https://huggingface.co/spaces/YOUR_USERNAME/ml-review-env
+git clone https://huggingface.co/spaces/YOUR_USERNAME/open-env
 cd ml-review-env
 
 # Install dependencies
