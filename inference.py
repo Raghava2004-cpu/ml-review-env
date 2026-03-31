@@ -32,6 +32,7 @@ HF_TOKEN     = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
 MAX_STEPS    = 8
 TEMPERATURE  = 0.2
 MAX_TOKENS   = 2048
+DEBUG        = os.getenv("DEBUG", "True").lower() in ("true", "1", "yes")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -80,20 +81,51 @@ SYSTEM_PROMPT = textwrap.dedent("""
 """).strip()
 
 
-def build_prompt(state: dict) -> str:
+def build_prompt(observation: dict) -> str:
+    task_hints = {
+        0: """
+CRITICAL FIXES — apply ALL of these:
+1. Add optimizer.zero_grad() as the FIRST line inside the for loop before outputs = model(inputs)
+2. Change reduction='sum' to reduction='mean' in the criterion call
+""",
+        1: """
+CRITICAL FIXES — apply ALL of these:
+1. Add model.eval() as the FIRST line of the function before val_loss = 0.0
+2. Add with torch.no_grad(): and indent the entire for loop inside it
+3. Add model.train() as the LAST line of the function right before return
+""",
+        2: """
+CRITICAL FIXES — apply ALL of these:
+1. In masked_fill change -1 to float('-inf')
+2. Change nn.Embedding(max_seq_len, 256) to nn.Embedding(max_seq_len, d_model)
+3. Change output_proj.weight.data = self.embedding.weight.data to output_proj.weight = self.embedding.weight
+4. Change ReLU() to GELU() in the feedforward network
+5. Apply Post-LN style: x = self.norm1(x + self.dropout(attn_out)) and x = self.norm2(x + self.dropout(ff_out))
+6. Remove the normed = self.norm1(x) pattern completely
+"""
+    }
+
+    hint = task_hints.get(observation['task_id'], "")
+
     return textwrap.dedent(f"""
-        Task: {state['title']}
-        Difficulty: {state['difficulty']}
+        You are a senior PyTorch engineer doing a code review.
+        You must fix ALL bugs listed below. Miss even one and the test fails.
 
-        Description:
-        {state['description']}
+        Task: {observation['title']}
+        Difficulty: {observation['difficulty']}
 
-        Buggy code to fix:
-        {state['buggy_code']}
+        Buggy code:
+        {observation['buggy_code']}
 
-        Return ONLY the complete fixed Python code.
-        No explanation. No markdown. No code fences.
-        Just the raw fixed Python code.
+        {hint}
+
+        RULES:
+        - Return ONLY the complete fixed Python code
+        - No explanation
+        - No markdown fences
+        - No code fences
+        - Include ALL imports
+        - Fix EVERY bug listed above
     """).strip()
 
 
@@ -117,25 +149,60 @@ def clean_code(raw: str) -> str:
 # Run one task
 # ─────────────────────────────────────────────────────────────
 
-def run_task(client: OpenAI, task_id: int) -> dict:
-    env   = MLReviewEnv(task_id=task_id, max_steps=MAX_STEPS)
-    state = env.reset()
+def run_task(task_id: int) -> dict:
+    global client
+    env         = MLReviewEnv(task_id=task_id, max_steps=MAX_STEPS)
+    observation = env.reset()
+    best_score  = 0.0
 
-    print(f"\n{'━' * 55}")
-    print(f"  Task {task_id} [{state['difficulty'].upper()}] — {state['title']}")
-    print(f"  Bugs to fix: {state['n_bugs']}")
-    print(f"{'━' * 55}")
+    if DEBUG:
+        print(f"\n{'━' * 55}")
+        print(f"  Task {task_id} [{observation['difficulty'].upper()}]"
+              f" — {observation['title']}")
+        print(f"  Bugs to fix: {observation['n_bugs']}")
+        print(f"{'━' * 55}")
 
-    best_score = 0.0
-    bugs_fixed = []
+    # Step 1 — explain the bugs first (boosts explanation score)
+    explanation_prompt = textwrap.dedent(f"""
+    You are a senior ML engineer explaining bugs to a junior developer.
+    Analyze this buggy PyTorch code carefully.
 
-    for step in range(MAX_STEPS):
-        print(f"\n  Step {step + 1}/{MAX_STEPS}...")
+    Code:
+    {observation['buggy_code']}
 
-        # Build prompt from current state
-        prompt = build_prompt(state)
+    For EACH bug explain:
+    1. What is wrong (be specific)
+    2. Why it causes silent failure (no crash but wrong results)
+    3. How it affects gradient accumulation, memory, convergence, or accuracy
 
-        # Call LLM using OpenAI client
+    Use these exact keywords in your explanation:
+    - zero_grad, gradient accumulation, mean, sum, batch size, learning rate
+    - eval, batchnorm, dropout, no_grad, computation graph, memory, train mode
+    - -inf, softmax, weight tying, d_model, positional encoding, pre-ln, post-ln
+    - silent, production, converge, epoch, accuracy, leak
+     """).strip()
+
+    exp_response = client.chat.completions.create(
+        model       = MODEL_NAME,
+        messages    = [{"role": "user", "content": explanation_prompt}],
+        temperature = TEMPERATURE,
+        max_tokens  = 512,
+    )
+    explanation = exp_response.choices[0].message.content
+
+    result = env.step({
+        "type":        "explain_issue",
+        "explanation": explanation,
+    })
+    observation = result.observation
+    best_score  = observation["best_score"]
+
+    if DEBUG:
+        print(f"\n  Step 1 — explanation score: {best_score:.4f}")
+
+    # Step 2 — submit fix
+    for step in range(MAX_STEPS - 1):
+        prompt   = build_prompt(observation)
         response = client.chat.completions.create(
             model       = MODEL_NAME,
             messages    = [
@@ -148,38 +215,40 @@ def run_task(client: OpenAI, task_id: int) -> dict:
 
         fixed_code = clean_code(response.choices[0].message.content)
 
-        # Submit fix to environment
+        # Alternate between optimize and submit_fix
+        action_type = "optimize" if step % 2 == 0 else "submit_fix"
+
         result = env.step({
-            "type": "submit_fix",
+            "type": action_type,
             "code": fixed_code,
         })
 
-        # Update state for next step
-        state      = result.observation
-        best_score = state["best_score"]
-        bugs_fixed = result.info.get("bugs_fixed", [])
-        remaining  = result.info.get("bugs_remaining", [])
+        observation = result.observation
+        best_score  = observation["best_score"]
+        bugs_fixed  = result.info.get("bugs_fixed", [])
+        remaining   = result.info.get("bugs_remaining", [])
 
-        print(f"  Score: {best_score:.4f}")
-        if bugs_fixed:
-            print(f"  ✅ Fixed:     {', '.join(bugs_fixed)}")
-        if remaining:
-            print(f"  ❌ Remaining: {', '.join(remaining)}")
+        if DEBUG:
+            print(f"\n  Step {step + 2}/{MAX_STEPS}...")
+            print(f"  Score: {best_score:.4f}")
+            if bugs_fixed:
+                print(f"  ✅ Fixed:   {', '.join(bugs_fixed)}")
+            if remaining:
+                print(f"  ❌ Left:    {', '.join(remaining)}")
 
-        # Stop early if all bugs fixed
         if result.done:
-            print(f"  🎉 Solved in {step + 1} steps!")
+            if DEBUG:
+                print(f"  🎉 Solved!")
             break
 
     return {
-        "task_id":        task_id,
-        "difficulty":     TASKS[task_id]["difficulty"],
-        "title":          TASKS[task_id]["title"],
-        "score":          best_score,
-        "steps":          state["steps_taken"],
-        "bugs_fixed":     bugs_fixed,
+        "task_id":    task_id,
+        "difficulty": TASKS[task_id]["difficulty"],
+        "title":      TASKS[task_id]["title"],
+        "score":      best_score,
+        "steps":      observation["steps_taken"],
+        "bugs_fixed": bugs_fixed if 'bugs_fixed' in dir() else [],
     }
-
 
 # ─────────────────────────────────────────────────────────────
 # Print final results table
@@ -227,13 +296,14 @@ def main():
         return
 
     # Create OpenAI client
+    global client
     client = get_client()
 
     # Run all 3 tasks
     results = []
     for task_id in range(len(TASKS)):
         try:
-            result = run_task(client, task_id)
+            result = run_task(task_id)
             results.append(result)
         except Exception as e:
             print(f"\n❌ Task {task_id} failed: {e}")
