@@ -171,10 +171,10 @@ Scores achieved by `gpt-4o-mini` on each task:
 
 | Task | Difficulty | Score |
 |------|-----------|-------|
-| 0 | Easy | 0.6967 |
-| 1 | Medium | 0.6967 |
-| 2 | Hard | 0.6500 |
-| **Average** | | **0.6811** |
+| 0 | Easy | 0.7267 |
+| 1 | Medium | 0.7667 |
+| 2 | Hard | 0.7100 |
+| **Average** | | **0.7375** |
 
 ---
 
